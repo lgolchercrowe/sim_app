@@ -1,0 +1,12 @@
+version: 1.0
+runtime: python3
+
+build:
+  commands:
+    build:
+      - pip install -r requirements.txt
+
+run:
+  network:
+    port: 8000
+  command: uvicorn application:app --host 0.0.0.0 --port 8000
