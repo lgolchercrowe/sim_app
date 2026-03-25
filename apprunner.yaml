@@ -4,9 +4,8 @@ runtime: python3
 build:
   commands:
     build:
-      - pip install -r requirements.txt
+      - python -m pip install --upgrade pip
+      - python -m pip install -r requirements.txt
 
 run:
-  network:
-    port: 8000
-  command: uvicorn application:app --host 0.0.0.0 --port 8080
+  command: python -m uvicorn app:app --host 0.0.0.0 --port 8080
