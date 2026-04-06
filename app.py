@@ -8,8 +8,9 @@ from statistics import mean
 from typing import Dict, List, Optional, Tuple, Literal
 
 import numpy as np
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Body, HTTPException
 from pydantic import BaseModel, Field
+
 
 app = FastAPI(
     title="Simulation API",
@@ -123,11 +124,11 @@ def risk_simulate(payload: RiskSimulationRequest):
 # ============================================================
 
 class HybridSimulationRequest(BaseModel):
-    T: int = 120
-    D0: float = 1_000_000
-    B0: float = 800_000
-    ID0: float = 900_000
-    IB0: float = 700_000
+    T: int = Field(default=120, gt=0)
+    D0: float = Field(default=1_000_000, ge=0)
+    B0: float = Field(default=800_000, ge=0)
+    ID0: float = Field(default=900_000, ge=0)
+    IB0: float = Field(default=700_000, ge=0)
     R0: float = 0.0
     gD: float = 0.01
     gB: float = 0.005
@@ -137,27 +138,35 @@ class HybridSimulationRequest(BaseModel):
 
 
 @app.post("/hybrid/simulate", tags=["Hybrid"])
-def hybrid_simulate(payload: HybridSimulationRequest):
-    if payload.seed is not None:
-        np.random.seed(int(payload.seed))
+def hybrid_simulate(payload: HybridSimulationRequest = Body(default_factory=HybridSimulationRequest)):
+    try:
+        if payload.seed is not None:
+            np.random.seed(int(payload.seed))
 
-    D, B, ID, IB, R = payload.D0, payload.B0, payload.ID0, payload.IB0, payload.R0
-    history = []
+        D, B, ID, IB, R = payload.D0, payload.B0, payload.ID0, payload.IB0, payload.R0
+        history = []
 
-    for t in range(payload.T):
-        D = max(D + payload.gD * D - payload.lD * D, 0)
-        B = max(B + payload.gB * B - payload.lB * B, 0)
-        revenue = D * 0.015 + B * 0.02
-        R += revenue
+        for t in range(payload.T):
+            D = max(D + payload.gD * D - payload.lD * D, 0)
+            B = max(B + payload.gB * B - payload.lB * B, 0)
+            revenue = D * 0.015 + B * 0.02
+            R += revenue
 
-        history.append({"t": t, "revenue": float(R)})
+            history.append({
+                "t": t,
+                "revenue": float(R),
+                "D": float(D),
+                "B": float(B),
+            })
 
-    return {
-        "inputs": payload.model_dump(),
-        "final_revenue": float(R),
-        "steps": history,
-    }
+        return {
+            "inputs": payload.model_dump(),
+            "final_revenue": float(R),
+            "steps": history,
+        }
 
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Hybrid simulation failed: {str(e)}")
 
 # ============================================================
 # 4) TELCO (simplificado)
