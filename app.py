@@ -5,12 +5,11 @@ import os
 import random
 from dataclasses import dataclass
 from statistics import mean
-from typing import Dict, List, Optional, Tuple, Literal
+from typing import Dict, List, Optional, Tuple, Literal, Any
 
 import numpy as np
 from fastapi import FastAPI, Body, HTTPException
 from pydantic import BaseModel, Field
-
 
 app = FastAPI(
     title="Simulation API",
@@ -169,37 +168,106 @@ def hybrid_simulate(payload: HybridSimulationRequest = Body(default_factory=Hybr
         raise HTTPException(status_code=500, detail=f"Hybrid simulation failed: {str(e)}")
 
 # ============================================================
-# 4) TELCO (simplificado)
+# 4) TELCO
 # ============================================================
 
 class TelcoSimulationRequest(BaseModel):
-    T: int = 36
-    M: int = 2_000_000
-    A0: float = 0.08
+    horizon_months: int = Field(default=36, ge=1, le=120)
+    market_size: int = Field(default=2_000_000, ge=1)
+
+    # Adoption / demand
+    initial_adoption: float = Field(default=0.08, ge=0.0, le=1.0)
+    base_monthly_growth: float = Field(default=0.03, ge=0.0, le=1.0)
+    adoption_ceiling: float = Field(default=0.75, ge=0.0, le=1.0)
+
+    # Commercials
+    monthly_arpu: float = Field(default=15.0, ge=0.0)
+    price_change_pct: float = Field(default=0.0, ge=-1.0, le=1.0)
+    price_elasticity: float = Field(default=0.6, ge=0.0, le=5.0)
+
+    # Churn / competition
+    base_churn_rate: float = Field(default=0.015, ge=0.0, le=1.0)
+    competitive_pressure: float = Field(default=1.0, ge=0.0, le=3.0)
+    regulatory_factor: float = Field(default=1.0, ge=0.0, le=3.0)
+
+    # Network / rollout
+    network_capacity_users: int = Field(default=1_600_000, ge=1)
+    rollout_capex: float = Field(default=250_000_000, ge=0.0)
+    monthly_opex: float = Field(default=8_000_000, ge=0.0)
+    variable_cost_per_user: float = Field(default=2.5, ge=0.0)
+
+    # Financials
+    discount_rate_monthly: float = Field(default=0.01, ge=0.0, le=1.0)
+
+    # Scenario drivers
+    demand_shock: float = Field(default=1.0, ge=0.0, le=3.0)
+    adoption_shock: float = Field(default=1.0, ge=0.0, le=3.0)
 
 
 @app.post("/telco/simulate", tags=["Telco"])
 def telco_simulate(payload: TelcoSimulationRequest):
-    A = payload.A0
-    results = []
+    price = payload.monthly_arpu * (1 + payload.price_change_pct)
 
-    for t in range(payload.T):
-        A = A + 0.03 * (1 - A)
-        users = payload.M * A
-        revenue = users * 15
+    adoption = payload.initial_adoption
+    cumulative_discounted_cashflow = -payload.rollout_capex
+    results: List[Dict[str, Any]] = []
+
+    for t in range(payload.horizon_months):
+        # Demand and adoption dynamics
+        price_effect = max(0.0, 1.0 - payload.price_elasticity * abs(payload.price_change_pct))
+        growth = (
+            payload.base_monthly_growth
+            * payload.demand_shock
+            * payload.adoption_shock
+            * payload.regulatory_factor
+            * price_effect
+            / payload.competitive_pressure
+        )
+
+        churn_penalty = payload.base_churn_rate * payload.competitive_pressure
+        adoption = adoption + growth * (payload.adoption_ceiling - adoption) - churn_penalty * adoption
+        adoption = max(0.0, min(payload.adoption_ceiling, adoption))
+
+        users = payload.market_size * adoption
+        revenue = users * price
+        opex = payload.monthly_opex + users * payload.variable_cost_per_user
+        ebitda = revenue - opex
+        capacity_pressure = users / payload.network_capacity_users if payload.network_capacity_users else None
+
+        discounted_cashflow = ebitda / ((1 + payload.discount_rate_monthly) ** (t + 1))
+        cumulative_discounted_cashflow += discounted_cashflow
 
         results.append({
-            "t": t,
-            "adoption": float(A),
-            "users": float(users),
-            "revenue": float(revenue)
+            "t": t + 1,
+            "adoption": round(adoption, 6),
+            "users": round(users, 2),
+            "price": round(price, 2),
+            "revenue": round(revenue, 2),
+            "opex": round(opex, 2),
+            "ebitda": round(ebitda, 2),
+            "capacity_pressure": round(capacity_pressure, 4) if capacity_pressure is not None else None,
+            "discounted_cashflow": round(discounted_cashflow, 2),
+            "cumulative_discounted_cashflow": round(cumulative_discounted_cashflow, 2),
         })
+
+    final = results[-1]
+    peak_pressure = max(r["capacity_pressure"] for r in results if r["capacity_pressure"] is not None)
+    avg_ebitda = sum(r["ebitda"] for r in results) / len(results)
 
     return {
         "inputs": payload.model_dump(),
+        "summary": {
+            "final_adoption": final["adoption"],
+            "final_users": final["users"],
+            "final_revenue": final["revenue"],
+            "final_ebitda": final["ebitda"],
+            "average_monthly_ebitda": round(avg_ebitda, 2),
+            "peak_capacity_pressure": round(peak_pressure, 4),
+            "npv_proxy": round(cumulative_discounted_cashflow, 2),
+            "payback_signaled": cumulative_discounted_cashflow > 0,
+        },
         "results": results,
     }
-
 
 # ============================================================
 # 5) LOGISTICS (simplificado)
