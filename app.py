@@ -205,10 +205,19 @@ class RiskSimulationRequest(BaseModel):
     seed: Optional[int] = None
 
 
-@app.post("/risk/simulate", tags=["Risk"])
-def risk_simulate(payload: RiskSimulationRequest):
+@app.post("/risk/simulate", operation_id="riskSimulate", tags=["Risk"])
+def risk_simulate(payload: RiskSimulationRequest = Body(default_factory=RiskSimulationRequest)):
     if payload.paths <= 0:
         raise HTTPException(status_code=400, detail="paths must be > 0")
+
+    if payload.S0 <= 0:
+        raise HTTPException(status_code=400, detail="S0 must be > 0")
+
+    if payload.T <= 0:
+        raise HTTPException(status_code=400, detail="T must be > 0")
+
+    if payload.sigma < 0:
+        raise HTTPException(status_code=400, detail="sigma must be >= 0")
 
     if payload.seed is not None:
         np.random.seed(int(payload.seed))
@@ -224,33 +233,23 @@ def risk_simulate(payload: RiskSimulationRequest):
 
     mean_pl = float(np.mean(PL))
 
-    
     p5_pl = float(np.percentile(PL, 5))
     p1_pl = float(np.percentile(PL, 1))
 
-   
+    # VaR como pérdida firmada:
+    # - negativo = pérdida
+    # - cero = no hay pérdida en ese percentil
+    # - nunca positivo
     var_95 = float(min(p5_pl, 0.0))
     var_99 = float(min(p1_pl, 0.0))
-
-    if var_95 == 0.0 and var_99 == 0.0:
-        var_note = (
-            "The adverse percentiles are not losses under this simulation. "
-            "VaR is reported as 0 because the tail outcome remains non-negative."
-        )
-    else:
-        var_note = (
-            "VaR is reported as a signed loss threshold. "
-            "Negative values represent losses; zero means no loss at that confidence level."
-        )
 
     return {
         "inputs": payload.model_dump(),
         "mean_PL": mean_pl,
         "VaR_95": var_95,
-        "VaR_99": var_99,
-        "VaR_note": var_note,
+        "VaR_99": var_99
     }
-
+    
 # ============================================================
 # 3) HYBRID
 # ============================================================
