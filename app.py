@@ -197,64 +197,12 @@ def audit_simulate(payload: AuditSimulationRequest):
 # ============================================================
 
 class RiskSimulationRequest(BaseModel):
-    S0: float = Field(default=100.0, gt=0)
-    mu: float = Field(default=0.05)
-    sigma: float = Field(default=0.2, ge=0.0)
-    T: float = Field(default=1.0, gt=0)
-    paths: int = Field(default=10_000, gt=0)
-    seed: Optional[int] = Field(default=42)
-
-
-def calculate_risk_metrics_from_pl(PL: np.ndarray) -> Dict[str, Any]:
-    """
-    PL = final value - initial value.
-    losses = -PL.
-
-    VaR is reported as a positive potential loss amount.
-    A positive VaR does NOT mean a gain.
-    """
-
-    losses = -PL
-
-    pnl_percentile_5 = float(np.percentile(PL, 5))
-    pnl_percentile_1 = float(np.percentile(PL, 1))
-
-    raw_loss_percentile_95 = float(np.percentile(losses, 95))
-    raw_loss_percentile_99 = float(np.percentile(losses, 99))
-
-    var_95 = float(max(0.0, raw_loss_percentile_95))
-    var_99 = float(max(0.0, raw_loss_percentile_99))
-
-    tail_95 = losses[losses >= raw_loss_percentile_95]
-    tail_99 = losses[losses >= raw_loss_percentile_99]
-
-    expected_shortfall_95 = (
-        float(max(0.0, np.mean(tail_95)))
-        if len(tail_95) > 0
-        else var_95
-    )
-
-    expected_shortfall_99 = (
-        float(max(0.0, np.mean(tail_99)))
-        if len(tail_99) > 0
-        else var_99
-    )
-
-    return {
-        "mean_PL": float(np.mean(PL)),
-        "pnl_percentile_5": pnl_percentile_5,
-        "pnl_percentile_1": pnl_percentile_1,
-        "raw_loss_percentile_95": raw_loss_percentile_95,
-        "raw_loss_percentile_99": raw_loss_percentile_99,
-        "VaR_95_loss_amount": var_95,
-        "VaR_99_loss_amount": var_99,
-        "VaR_95": var_95,
-        "VaR_99": var_99,
-        "expected_shortfall_95_loss_amount": expected_shortfall_95,
-        "expected_shortfall_99_loss_amount": expected_shortfall_99,
-        "loss_probability": float(np.mean(PL < 0)),
-        "sign_convention": "VaR is reported as a positive potential loss amount, not as a gain.",
-    }
+    S0: float = 100.0
+    mu: float = 0.05
+    sigma: float = 0.2
+    T: float = 1.0
+    paths: int = 10_000
+    seed: Optional[int] = None
 
 
 @app.post("/risk/simulate", tags=["Risk"])
@@ -262,9 +210,19 @@ def risk_simulate(payload: RiskSimulationRequest):
     if payload.paths <= 0:
         raise HTTPException(status_code=400, detail="paths must be > 0")
 
-    rng = np.random.default_rng(payload.seed)
+    if payload.S0 <= 0:
+        raise HTTPException(status_code=400, detail="S0 must be > 0")
 
-    Z = rng.standard_normal(size=payload.paths)
+    if payload.T <= 0:
+        raise HTTPException(status_code=400, detail="T must be > 0")
+
+    if payload.sigma < 0:
+        raise HTTPException(status_code=400, detail="sigma must be >= 0")
+
+    if payload.seed is not None:
+        np.random.seed(int(payload.seed))
+
+    Z = np.random.normal(size=payload.paths)
 
     ST = payload.S0 * np.exp(
         (payload.mu - 0.5 * payload.sigma**2) * payload.T
@@ -273,15 +231,161 @@ def risk_simulate(payload: RiskSimulationRequest):
 
     PL = ST - payload.S0
 
-    metrics = calculate_risk_metrics_from_pl(PL)
+    mean_pl = float(np.mean(PL))
+    p5_pl = float(np.percentile(PL, 5))
+    p1_pl = float(np.percentile(PL, 1))
+
+    # VaR como pérdida: nunca reportar valor negativo como "pérdida".
+    # Si el percentil adverso sigue siendo positivo, el VaR de pérdida es 0.
+    var_95 = max(0.0, -p5_pl)
+    var_99 = max(0.0, -p1_pl)
 
     return {
         "inputs": payload.model_dump(),
-        "model": "Geometric Brownian Motion single-asset simulation",
-        "initial_value": payload.S0,
-        "paths": payload.paths,
-        "time_horizon_years": payload.T,
-        **metrics,
+        "mean_PL": mean_pl,
+        "P5_PL": p5_pl,
+        "P1_PL": p1_pl,
+        "VaR_95": var_95,
+        "VaR_99": var_99,
+        "interpretation": (
+            "VaR_95 y VaR_99 están expresados como pérdida potencial. "
+            "Si el percentil de cola es positivo, el resultado adverso sigue siendo ganancia "
+            "y por eso el VaR de pérdida se reporta como 0."
+        ),
+    }
+
+# ============================================================
+# 2B) RISK / PORTFOLIO SDE
+# ============================================================
+
+class PortfolioAsset(BaseModel):
+    name: str
+    S0: float = Field(..., gt=0)
+    mu: float
+    sigma: float = Field(..., ge=0)
+    weight: float
+
+
+class PortfolioSimulationRequest(BaseModel):
+    assets: List[PortfolioAsset]
+    correlation_matrix: List[List[float]]
+    T: float = Field(default=1.0, gt=0)
+    paths: int = Field(default=10_000, gt=0)
+    seed: Optional[int] = 42
+
+
+@app.post("/risk/portfolio/simulate", tags=["Risk"])
+def risk_portfolio_simulate(payload: PortfolioSimulationRequest):
+    n_assets = len(payload.assets)
+
+    if n_assets == 0:
+        raise HTTPException(status_code=400, detail="assets must not be empty")
+
+    if len(payload.correlation_matrix) != n_assets:
+        raise HTTPException(
+            status_code=400,
+            detail="correlation_matrix must have the same number of rows as assets",
+        )
+
+    for row in payload.correlation_matrix:
+        if len(row) != n_assets:
+            raise HTTPException(
+                status_code=400,
+                detail="correlation_matrix must be square and match the number of assets",
+            )
+
+    if payload.seed is not None:
+        np.random.seed(int(payload.seed))
+
+    corr = np.array(payload.correlation_matrix, dtype=float)
+
+    # Validaciones básicas de la matriz de correlación
+    if not np.allclose(corr, corr.T, atol=1e-8):
+        raise HTTPException(
+            status_code=400,
+            detail="correlation_matrix must be symmetric",
+        )
+
+    if not np.allclose(np.diag(corr), 1.0, atol=1e-8):
+        raise HTTPException(
+            status_code=400,
+            detail="correlation_matrix diagonal must be 1.0",
+        )
+
+    # Cholesky para generar shocks correlacionados
+    try:
+        L = np.linalg.cholesky(corr)
+    except np.linalg.LinAlgError:
+        raise HTTPException(
+            status_code=400,
+            detail="correlation_matrix must be positive definite",
+        )
+
+    # Pesos del portafolio
+    weights = np.array([a.weight for a in payload.assets], dtype=float)
+    S0 = np.array([a.S0 for a in payload.assets], dtype=float)
+    mu = np.array([a.mu for a in payload.assets], dtype=float)
+    sigma = np.array([a.sigma for a in payload.assets], dtype=float)
+
+    # Normalmente el peso total puede o no sumar 1; no lo forzamos,
+    # porque puede representar una exposición económica total.
+    initial_portfolio_value = float(np.sum(weights * S0))
+
+    # Generar normales independientes y luego correlacionarlas
+    Z = np.random.normal(size=(payload.paths, n_assets))
+    Z_corr = Z @ L.T
+
+    # Simulación conjunta por activo
+    ST = np.zeros((payload.paths, n_assets))
+    for i in range(n_assets):
+        ST[:, i] = S0[i] * np.exp(
+            (mu[i] - 0.5 * sigma[i] ** 2) * payload.T
+            + sigma[i] * np.sqrt(payload.T) * Z_corr[:, i]
+        )
+
+    # P&L del portafolio
+    portfolio_final_value = np.sum(ST * weights, axis=1)
+    portfolio_PL = portfolio_final_value - initial_portfolio_value
+
+    mean_pl = float(np.mean(portfolio_PL))
+    p5_pl = float(np.percentile(portfolio_PL, 5))
+    p1_pl = float(np.percentile(portfolio_PL, 1))
+
+    # VaR como pérdida potencial, nunca negativo
+    var_95 = max(0.0, -p5_pl)
+    var_99 = max(0.0, -p1_pl)
+
+    asset_details = []
+    for i, asset in enumerate(payload.assets):
+        asset_details.append({
+            "name": asset.name,
+            "S0": asset.S0,
+            "mu": asset.mu,
+            "sigma": asset.sigma,
+            "weight": asset.weight,
+        })
+
+    return {
+        "inputs": {
+            "assets": asset_details,
+            "correlation_matrix": payload.correlation_matrix,
+            "T": payload.T,
+            "paths": payload.paths,
+            "seed": payload.seed,
+        },
+        "portfolio": {
+            "initial_value": initial_portfolio_value,
+            "mean_PL": mean_pl,
+            "P5_PL": p5_pl,
+            "P1_PL": p1_pl,
+            "VaR_95": var_95,
+            "VaR_99": var_99,
+        },
+        "interpretation": (
+            "El portafolio fue simulado con shocks correlacionados entre activos. "
+            "VaR_95 y VaR_99 se reportan como pérdida potencial. "
+            "Si el percentil adverso del P&L sigue siendo positivo, el VaR de pérdida se reporta como 0."
+        ),
     }
 
 # ============================================================
