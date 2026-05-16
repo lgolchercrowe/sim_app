@@ -205,49 +205,26 @@ class RiskSimulationRequest(BaseModel):
     seed: Optional[int] = None
 
 
-@app.post("/risk/simulate", operation_id="riskSimulate", tags=["Risk"])
-def risk_simulate(payload: RiskSimulationRequest = Body(default_factory=RiskSimulationRequest)):
+@app.post("/risk/simulate", tags=["Risk"])
+def risk_simulate(payload: RiskSimulationRequest):
     if payload.paths <= 0:
         raise HTTPException(status_code=400, detail="paths must be > 0")
-
-    if payload.S0 <= 0:
-        raise HTTPException(status_code=400, detail="S0 must be > 0")
-
-    if payload.T <= 0:
-        raise HTTPException(status_code=400, detail="T must be > 0")
-
-    if payload.sigma < 0:
-        raise HTTPException(status_code=400, detail="sigma must be >= 0")
 
     if payload.seed is not None:
         np.random.seed(int(payload.seed))
 
     Z = np.random.normal(size=payload.paths)
-
     ST = payload.S0 * np.exp(
         (payload.mu - 0.5 * payload.sigma**2) * payload.T
         + payload.sigma * np.sqrt(payload.T) * Z
     )
-
     PL = ST - payload.S0
-
-    mean_pl = float(np.mean(PL))
-
-    p5_pl = float(np.percentile(PL, 5))
-    p1_pl = float(np.percentile(PL, 1))
-
-    # VaR como pérdida firmada:
-    # - negativo = pérdida
-    # - cero = no hay pérdida en ese percentil
-    # - nunca positivo
-    var_95 = float(min(p5_pl, 0.0))
-    var_99 = float(min(p1_pl, 0.0))
 
     return {
         "inputs": payload.model_dump(),
-        "mean_PL": mean_pl,
-        "VaR_95": var_95,
-        "VaR_99": var_99
+        "mean_PL": float(np.mean(PL)),
+        "VaR_95": float(-np.percentile(PL, 5)),
+        "VaR_99": float(-np.percentile(PL, 1)),
     }
     
 # ============================================================
