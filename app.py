@@ -202,7 +202,7 @@ class RiskSimulationRequest(BaseModel):
     sigma: float = 0.2
     T: float = 1.0
     paths: int = 10_000
-    seed: Optional[int] = None
+    seed: Optional[int] = 42
 
 
 @app.post("/risk/simulate", tags=["Risk"])
@@ -235,8 +235,8 @@ def risk_simulate(payload: RiskSimulationRequest):
     p5_pl = float(np.percentile(PL, 5))
     p1_pl = float(np.percentile(PL, 1))
 
-    # VaR como pérdida: nunca reportar valor negativo como "pérdida".
-    # Si el percentil adverso sigue siendo positivo, el VaR de pérdida es 0.
+    # VaR must be reported as a loss measure.
+    # If the adverse percentile is still positive, there is no loss VaR.
     var_95 = max(0.0, -p5_pl)
     var_99 = max(0.0, -p1_pl)
 
@@ -247,10 +247,10 @@ def risk_simulate(payload: RiskSimulationRequest):
         "P1_PL": p1_pl,
         "VaR_95": var_95,
         "VaR_99": var_99,
-        "interpretation": (
-            "VaR_95 y VaR_99 están expresados como pérdida potencial. "
-            "Si el percentil de cola es positivo, el resultado adverso sigue siendo ganancia "
-            "y por eso el VaR de pérdida se reporta como 0."
+        "interpretation_note": (
+            "VaR_95 and VaR_99 are reported as loss measures. "
+            "If P5_PL or P1_PL is positive, the adverse percentile is still profitable, "
+            "so the loss-based VaR is reported as 0."
         ),
     }
 
