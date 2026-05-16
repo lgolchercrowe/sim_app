@@ -196,150 +196,22 @@ def audit_simulate(payload: AuditSimulationRequest):
 # 2) RISK / SDE
 # ============================================================
 
-# ============================================================
-# 2) RISK / SDE
-# ============================================================
-
 class RiskSimulationRequest(BaseModel):
-    S0: float = Field(
-        default=100.0,
-        gt=0,
-        description="Initial asset or portfolio value.",
-    )
-    mu: float = Field(
-        default=0.05,
-        description="Expected return or drift. Example: 0.05 means 5%.",
-    )
-    sigma: float = Field(
-        default=0.2,
-        ge=0.0,
-        description="Volatility. Example: 0.2 means 20%.",
-    )
-    T: float = Field(
-        default=1.0,
-        gt=0,
-        description="Time horizon in years.",
-    )
-    paths: int = Field(
-        default=10_000,
-        gt=0,
-        description="Number of Monte Carlo simulation paths.",
-    )
-    seed: Optional[int] = Field(
-        default=42,
-        description="Random seed for reproducible simulations.",
-    )
-
-
-class PortfolioAssetIn(BaseModel):
-    name: str = Field(
-        ...,
-        description="Asset name, for example: Stocks, Bonds, FX, Crypto.",
-    )
-    value: float = Field(
-        ...,
-        gt=0,
-        description="Initial monetary value invested in this asset.",
-    )
-    mu: float = Field(
-        ...,
-        description="Expected return or drift for this asset.",
-    )
-    sigma: float = Field(
-        ...,
-        ge=0.0,
-        description="Volatility for this asset.",
-    )
-
-
-class PortfolioRiskSimulationRequest(BaseModel):
-    assets: List[PortfolioAssetIn] = Field(
-        ...,
-        min_length=1,
-        description="List of assets included in the portfolio.",
-    )
-    correlation: Optional[List[List[float]]] = Field(
-        default=None,
-        description=(
-            "Correlation matrix between assets. "
-            "If omitted, assets are assumed to be uncorrelated."
-        ),
-    )
-    T: float = Field(
-        default=1.0,
-        gt=0,
-        description="Time horizon in years.",
-    )
-    paths: int = Field(
-        default=10_000,
-        gt=0,
-        description="Number of Monte Carlo simulation paths.",
-    )
-    seed: Optional[int] = Field(
-        default=42,
-        description="Random seed for reproducible simulations.",
-    )
-
-
-class StressScenarioIn(BaseModel):
-    name: str = Field(
-        ...,
-        description="Scenario name, for example: Recession, Market Crash, FX Shock.",
-    )
-    mu_shift: float = Field(
-        default=0.0,
-        description=(
-            "Shift applied to each asset's expected return. "
-            "Example: -0.10 means expected return is reduced by 10 percentage points."
-        ),
-    )
-    sigma_multiplier: float = Field(
-        default=1.0,
-        gt=0,
-        description=(
-            "Multiplier applied to volatility. "
-            "Example: 1.8 means volatility increases by 80%."
-        ),
-    )
-    market_shock_pct: float = Field(
-        default=0.0,
-        ge=-1.0,
-        description=(
-            "Immediate shock applied to terminal simulated values. "
-            "Example: -0.20 means a 20% adverse market shock."
-        ),
-    )
-    correlation_blend_to_one: float = Field(
-        default=0.0,
-        ge=0.0,
-        le=1.0,
-        description=(
-            "Stress parameter that pushes correlations toward 1. "
-            "0 means no change. 1 means all assets move together."
-        ),
-    )
-
-
-class PortfolioStressSimulationRequest(PortfolioRiskSimulationRequest):
-    scenarios: List[StressScenarioIn] = Field(
-        ...,
-        min_length=1,
-        description="Stress scenarios to simulate.",
-    )
+    S0: float = Field(default=100.0, gt=0)
+    mu: float = Field(default=0.05)
+    sigma: float = Field(default=0.2, ge=0.0)
+    T: float = Field(default=1.0, gt=0)
+    paths: int = Field(default=10_000, gt=0)
+    seed: Optional[int] = Field(default=42)
 
 
 def calculate_risk_metrics_from_pl(PL: np.ndarray) -> Dict[str, Any]:
     """
-    Calculates risk metrics from simulated P&L.
-
-    PL means Profit and Loss:
-        PL = final value - initial value
-
-    Losses are calculated as:
-        losses = -PL
+    PL = final value - initial value.
+    losses = -PL.
 
     VaR is reported as a positive potential loss amount.
-    Therefore, a positive VaR does NOT mean a gain.
+    A positive VaR does NOT mean a gain.
     """
 
     losses = -PL
@@ -350,177 +222,45 @@ def calculate_risk_metrics_from_pl(PL: np.ndarray) -> Dict[str, Any]:
     raw_loss_percentile_95 = float(np.percentile(losses, 95))
     raw_loss_percentile_99 = float(np.percentile(losses, 99))
 
-    VaR_95_loss_amount = float(max(0.0, raw_loss_percentile_95))
-    VaR_99_loss_amount = float(max(0.0, raw_loss_percentile_99))
+    var_95 = float(max(0.0, raw_loss_percentile_95))
+    var_99 = float(max(0.0, raw_loss_percentile_99))
 
     tail_95 = losses[losses >= raw_loss_percentile_95]
     tail_99 = losses[losses >= raw_loss_percentile_99]
 
-    expected_shortfall_95_loss_amount = (
+    expected_shortfall_95 = (
         float(max(0.0, np.mean(tail_95)))
         if len(tail_95) > 0
-        else VaR_95_loss_amount
+        else var_95
     )
 
-    expected_shortfall_99_loss_amount = (
+    expected_shortfall_99 = (
         float(max(0.0, np.mean(tail_99)))
         if len(tail_99) > 0
-        else VaR_99_loss_amount
+        else var_99
     )
-
-    loss_probability = float(np.mean(PL < 0))
 
     return {
         "mean_PL": float(np.mean(PL)),
-
         "pnl_percentile_5": pnl_percentile_5,
         "pnl_percentile_1": pnl_percentile_1,
-
         "raw_loss_percentile_95": raw_loss_percentile_95,
         "raw_loss_percentile_99": raw_loss_percentile_99,
-
-        "VaR_95_loss_amount": VaR_95_loss_amount,
-        "VaR_99_loss_amount": VaR_99_loss_amount,
-
-        "VaR_95": VaR_95_loss_amount,
-        "VaR_99": VaR_99_loss_amount,
-
-        "expected_shortfall_95_loss_amount": expected_shortfall_95_loss_amount,
-        "expected_shortfall_99_loss_amount": expected_shortfall_99_loss_amount,
-
-        "loss_probability": loss_probability,
-
-        "sign_convention": (
-            "VaR is reported as a positive potential loss amount, not as a gain."
-        ),
+        "VaR_95_loss_amount": var_95,
+        "VaR_99_loss_amount": var_99,
+        "VaR_95": var_95,
+        "VaR_99": var_99,
+        "expected_shortfall_95_loss_amount": expected_shortfall_95,
+        "expected_shortfall_99_loss_amount": expected_shortfall_99,
+        "loss_probability": float(np.mean(PL < 0)),
+        "sign_convention": "VaR is reported as a positive potential loss amount, not as a gain.",
     }
-
-
-def validate_correlation_matrix(corr: np.ndarray, asset_count: int) -> None:
-    """
-    Validates that the correlation matrix is usable for portfolio simulation.
-    """
-
-    if corr.shape != (asset_count, asset_count):
-        raise HTTPException(
-            status_code=400,
-            detail="correlation matrix size must match the number of assets",
-        )
-
-    if not np.allclose(corr, corr.T, atol=1e-8):
-        raise HTTPException(
-            status_code=400,
-            detail="correlation matrix must be symmetric",
-        )
-
-    if not np.allclose(np.diag(corr), np.ones(asset_count), atol=1e-8):
-        raise HTTPException(
-            status_code=400,
-            detail="correlation matrix diagonal must be 1",
-        )
-
-    if np.any(corr < -1.0) or np.any(corr > 1.0):
-        raise HTTPException(
-            status_code=400,
-            detail="correlation values must be between -1 and 1",
-        )
-
-    eigenvalues = np.linalg.eigvalsh(corr)
-
-    if np.min(eigenvalues) < -1e-8:
-        raise HTTPException(
-            status_code=400,
-            detail="correlation matrix must be positive semidefinite",
-        )
-
-
-def build_correlation_matrix(
-    correlation: Optional[List[List[float]]],
-    asset_count: int,
-) -> np.ndarray:
-    """
-    Builds the correlation matrix.
-
-    If no correlation matrix is provided, assets are assumed to be uncorrelated.
-    """
-
-    if correlation is None:
-        corr = np.eye(asset_count)
-    else:
-        corr = np.array(correlation, dtype=float)
-
-    validate_correlation_matrix(corr, asset_count)
-
-    return corr
-
-
-def correlation_matrix_square_root(corr: np.ndarray) -> np.ndarray:
-    """
-    Creates a square root matrix for the correlation matrix.
-
-    This uses eigenvalue decomposition instead of Cholesky because it can handle
-    positive semidefinite matrices, not only positive definite matrices.
-    """
-
-    eigenvalues, eigenvectors = np.linalg.eigh(corr)
-    eigenvalues = np.clip(eigenvalues, 0.0, None)
-
-    return eigenvectors @ np.diag(np.sqrt(eigenvalues))
-
-
-def simulate_correlated_gbm_terminal_values(
-    values: np.ndarray,
-    mu: np.ndarray,
-    sigma: np.ndarray,
-    corr: np.ndarray,
-    T: float,
-    paths: int,
-    seed: Optional[int],
-) -> np.ndarray:
-    """
-    Simulates terminal values for multiple correlated assets using GBM.
-
-    Each asset follows:
-
-        ST = S0 * exp((mu - 0.5 * sigma^2) * T + sigma * sqrt(T) * Z)
-
-    The Z shocks are correlated using the correlation matrix.
-    """
-
-    asset_count = len(values)
-
-    rng = np.random.default_rng(seed)
-
-    corr_sqrt = correlation_matrix_square_root(corr)
-
-    Z_independent = rng.standard_normal(size=(paths, asset_count))
-    Z_correlated = Z_independent @ corr_sqrt.T
-
-    terminal_values = values * np.exp(
-        (mu - 0.5 * sigma**2) * T
-        + sigma * np.sqrt(T) * Z_correlated
-    )
-
-    return terminal_values
 
 
 @app.post("/risk/simulate", tags=["Risk"])
 def risk_simulate(payload: RiskSimulationRequest):
-    """
-    Runs a single-asset Geometric Brownian Motion Monte Carlo simulation.
-
-    This endpoint is for one asset or one aggregated portfolio value.
-
-    Model:
-        ST = S0 * exp((mu - 0.5 * sigma^2) * T + sigma * sqrt(T) * Z)
-
-    P&L:
-        PL = ST - S0
-
-    VaR:
-        VaR is calculated from simulated losses and reported as a positive
-        potential loss amount.
-    """
+    if payload.paths <= 0:
+        raise HTTPException(status_code=400, detail="paths must be > 0")
 
     rng = np.random.default_rng(payload.seed)
 
@@ -543,157 +283,6 @@ def risk_simulate(payload: RiskSimulationRequest):
         "time_horizon_years": payload.T,
         **metrics,
     }
-
-
-@app.post("/risk/portfolio/simulate", tags=["Risk"])
-def portfolio_risk_simulate(payload: PortfolioRiskSimulationRequest):
-    """
-    Runs a correlated multi-asset portfolio GBM simulation.
-
-    This endpoint is used when the user wants to analyze a complete portfolio,
-    for example stocks, bonds, FX, commodities, or crypto together.
-
-    It incorporates diversification and joint risk through the correlation matrix.
-    """
-
-    asset_count = len(payload.assets)
-
-    values = np.array([asset.value for asset in payload.assets], dtype=float)
-    mu = np.array([asset.mu for asset in payload.assets], dtype=float)
-    sigma = np.array([asset.sigma for asset in payload.assets], dtype=float)
-
-    corr = build_correlation_matrix(payload.correlation, asset_count)
-
-    terminal_values = simulate_correlated_gbm_terminal_values(
-        values=values,
-        mu=mu,
-        sigma=sigma,
-        corr=corr,
-        T=payload.T,
-        paths=payload.paths,
-        seed=payload.seed,
-    )
-
-    portfolio_initial_value = float(np.sum(values))
-    portfolio_terminal_value = np.sum(terminal_values, axis=1)
-
-    PL = portfolio_terminal_value - portfolio_initial_value
-
-    metrics = calculate_risk_metrics_from_pl(PL)
-
-    asset_inputs = [
-        {
-            "name": asset.name,
-            "value": asset.value,
-            "mu": asset.mu,
-            "sigma": asset.sigma,
-            "portfolio_weight": float(asset.value / portfolio_initial_value),
-        }
-        for asset in payload.assets
-    ]
-
-    return {
-        "inputs": payload.model_dump(),
-        "model": "Correlated multi-asset Geometric Brownian Motion portfolio simulation",
-        "portfolio_initial_value": portfolio_initial_value,
-        "asset_count": asset_count,
-        "assets": asset_inputs,
-        "correlation_matrix_used": corr.tolist(),
-        "paths": payload.paths,
-        "time_horizon_years": payload.T,
-        **metrics,
-    }
-
-
-@app.post("/risk/portfolio/stress", tags=["Risk"])
-def portfolio_stress_simulate(payload: PortfolioStressSimulationRequest):
-    """
-    Runs portfolio risk simulations under future or stress scenarios.
-
-    Stress scenarios can modify:
-    - expected returns through mu_shift,
-    - volatility through sigma_multiplier,
-    - terminal values through market_shock_pct,
-    - diversification through correlation_blend_to_one.
-
-    This helps capture possible extreme losses under adverse market conditions.
-    """
-
-    asset_count = len(payload.assets)
-
-    values = np.array([asset.value for asset in payload.assets], dtype=float)
-    base_mu = np.array([asset.mu for asset in payload.assets], dtype=float)
-    base_sigma = np.array([asset.sigma for asset in payload.assets], dtype=float)
-
-    base_corr = build_correlation_matrix(payload.correlation, asset_count)
-
-    portfolio_initial_value = float(np.sum(values))
-
-    asset_inputs = [
-        {
-            "name": asset.name,
-            "value": asset.value,
-            "mu": asset.mu,
-            "sigma": asset.sigma,
-            "portfolio_weight": float(asset.value / portfolio_initial_value),
-        }
-        for asset in payload.assets
-    ]
-
-    scenario_results = []
-
-    for scenario in payload.scenarios:
-        stressed_mu = base_mu + scenario.mu_shift
-        stressed_sigma = base_sigma * scenario.sigma_multiplier
-
-        ones_corr = np.ones_like(base_corr)
-
-        stressed_corr = (
-            (1.0 - scenario.correlation_blend_to_one) * base_corr
-            + scenario.correlation_blend_to_one * ones_corr
-        )
-
-        validate_correlation_matrix(stressed_corr, asset_count)
-
-        terminal_values = simulate_correlated_gbm_terminal_values(
-            values=values,
-            mu=stressed_mu,
-            sigma=stressed_sigma,
-            corr=stressed_corr,
-            T=payload.T,
-            paths=payload.paths,
-            seed=payload.seed,
-        )
-
-        terminal_values = terminal_values * (1.0 + scenario.market_shock_pct)
-
-        portfolio_terminal_value = np.sum(terminal_values, axis=1)
-
-        PL = portfolio_terminal_value - portfolio_initial_value
-
-        metrics = calculate_risk_metrics_from_pl(PL)
-
-        scenario_results.append({
-            "scenario_name": scenario.name,
-            "scenario_inputs": scenario.model_dump(),
-            "stressed_mu_used": stressed_mu.tolist(),
-            "stressed_sigma_used": stressed_sigma.tolist(),
-            "stressed_correlation_matrix_used": stressed_corr.tolist(),
-            **metrics,
-        })
-
-    return {
-        "inputs": payload.model_dump(),
-        "model": "Correlated portfolio GBM stress scenario simulation",
-        "portfolio_initial_value": portfolio_initial_value,
-        "asset_count": asset_count,
-        "assets": asset_inputs,
-        "base_correlation_matrix_used": base_corr.tolist(),
-        "paths": payload.paths,
-        "time_horizon_years": payload.T,
-        "scenarios": scenario_results,
-    }
-
 
 # ============================================================
 # 3) HYBRID
